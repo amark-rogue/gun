@@ -44,7 +44,9 @@
       holdTimer: null,
       startedOnBubble: false,
       startedOnHalo: false,
-      sliding: false
+      sliding: false,
+      grabOffsetX: 0,
+      grabOffsetY: 0
     }
   };
 
@@ -64,22 +66,11 @@
   height: var(--fix-size);
   left: 0;
   top: 0;
-  transform: translate(-50%, -50%) rotate(0deg);
   pointer-events: auto;
   z-index: 2147483647;
   filter: blur(var(--fix-blur)) contrast(1.1);
-
-}
-#fix-bubble::before {
-  content: '';
-  position: absolute;
-  width: calc(var(--fix-size) * 0.9);
-  height: calc(var(--fix-size) * 0.9);
-  left: calc(var(--fix-size) * 0.05);
-  top: calc(var(--fix-size) * 0.1);
   background: rgba(255,255,255,0.02);
   border-radius: calc(var(--fix-size) * 0.45) calc(var(--fix-size) * 0.45) calc(var(--fix-size) * 0.45) 0;
-  transform: rotate(45deg);
   box-shadow: 0 0 0 1px rgba(255,255,255,0.3);
   backdrop-filter: invert(1);
   -webkit-backdrop-filter: invert(1);
@@ -261,11 +252,7 @@
     halo.style.left = `${state.x}px`;
     halo.style.top = `${state.y}px`;
 
-    const angle = Math.atan2(state.vy, state.vx);
-    if (!Number.isNaN(angle)) {
-      const deg = angle * 180 / Math.PI + 90; // base points down
-      bubble.style.transform = `translate(-50%, -50%) rotate(${deg}deg) scale(${1 + state.zIndexOffset * 0.02})`;
-    }
+    bubble.style.transform = `translate(-50%, -50%) rotate(45deg) scale(${1 + state.zIndexOffset * 0.02})`;
   }
 
   function getBubbleRect() {
@@ -593,9 +580,12 @@
     halo.classList.add('active');
     state.gesture.startX = t.clientX;
     state.gesture.startY = t.clientY;
+    state.gesture.grabOffsetX = t.clientX - state.x;
+    state.gesture.grabOffsetY = t.clientY - state.y;
     handleTapSequence(t, true, true);
     Fix.emit('touchstart', { x: t.clientX, y: t.clientY });
-  }, { passive: true });
+    e.preventDefault();
+  }, { passive: false });
 
   halo.addEventListener('touchstart', (e) => {
     if (!state.visible) return;
@@ -605,17 +595,21 @@
     state.dragging = true;
     state.pointerId = t.identifier;
     halo.classList.add('active');
+    state.gesture.grabOffsetX = t.clientX - state.x;
+    state.gesture.grabOffsetY = t.clientY - state.y;
     handleTapSequence(t, false, true);
     Fix.emit('touchstart', { x: t.clientX, y: t.clientY });
-  }, { passive: true });
+    e.preventDefault();
+  }, { passive: false });
 
   document.addEventListener('touchmove', (e) => {
     if (!state.dragging) return;
     const t = [...e.touches].find(tt => tt.identifier === state.pointerId) || e.touches[0];
     if (!t) return;
-    moveTo(t.clientX, t.clientY);
+    moveTo(t.clientX - state.gesture.grabOffsetX, t.clientY - state.gesture.grabOffsetY);
     handleSlide(t);
-  }, { passive: true });
+    e.preventDefault();
+  }, { passive: false });
 
   document.addEventListener('touchend', (e) => {
     if (!state.dragging) return;
