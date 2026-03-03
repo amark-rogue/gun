@@ -1,0 +1,603 @@
+/* fix.js - mobile thumb inspector (prototype) */
+(() => {
+  'use strict';
+
+  const Fix = {
+    _listeners: new Map(),
+    on(evt, fn) {
+      if (!this._listeners.has(evt)) this._listeners.set(evt, new Set());
+      this._listeners.get(evt).add(fn);
+      return () => this._listeners.get(evt)?.delete(fn);
+    },
+    emit(evt, data) {
+      this._listeners.get(evt)?.forEach((fn) => {
+        try { fn(data); } catch (e) { console.error(e); }
+      });
+    }
+  };
+
+  if (window.FixInspector) return;
+  window.FixInspector = Fix;
+
+  const state = {
+    visible: false,
+    dragging: false,
+    pointerId: null,
+    x: window.innerWidth * 0.7,
+    y: window.innerHeight * 0.4,
+    vx: 0,
+    vy: 0,
+    lastMoveTime: 0,
+    edgeLockX: false,
+    edgeLockY: false,
+    zIndexOffset: 0,
+    elementsStack: [],
+    selectedEl: null,
+    dimmedEls: new Set(),
+    gesture: {
+      tapCount: 0,
+      lastTapTime: 0,
+      startX: 0,
+      startY: 0,
+      axisLock: null,
+      tapTimer: null,
+      holdTimer: null,
+      startedOnBubble: false,
+      startedOnHalo: false,
+      sliding: false
+    }
+  };
+
+  const css = `
+#fix-root {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2147483647;
+}
+#fix-bubble {
+  position: fixed;
+  width: 38px;
+  height: 48px;
+  left: 0;
+  top: 0;
+  transform: translate(-50%, -50%) rotate(0deg);
+  pointer-events: auto;
+  z-index: 2147483647;
+  filter: blur(0.4px) contrast(1.1);
+  mix-blend-mode: difference;
+}
+#fix-bubble::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: rgba(255,255,255,0.9);
+  border-radius: 18px 18px 18px 18px;
+  clip-path: path('M 19 0 C 28 0 38 10 38 21 C 38 31 31 40 19 48 C 7 40 0 31 0 21 C 0 10 10 0 19 0 Z');
+  box-shadow: 0 0 0 1px rgba(255,255,255,0.3);
+}
+#fix-halo {
+  position: fixed;
+  width: 120px;
+  height: 120px;
+  left: 0;
+  top: 0;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: radial-gradient(rgba(255,255,255,0.18), rgba(255,255,255,0.02) 55%, transparent 70%);
+  opacity: 0;
+  transition: opacity 250ms ease;
+  pointer-events: auto;
+}
+#fix-halo.active { opacity: 0.9; }
+#fix-outline {
+  position: fixed;
+  pointer-events: none;
+  z-index: 2147483646;
+  border-radius: 6px;
+  padding: 2px;
+}
+#fix-outline::before {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border-radius: 8px;
+  background: conic-gradient(from 0deg, #ff4d4d, #ffa64d, #ffee4d, #4dff88, #4dd2ff, #7a4dff, #ff4dcb, #ff4d4d);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+}
+#fix-outline .label {
+  position: absolute;
+  top: -22px;
+  left: 0;
+  font: 11px/1.2 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: #111;
+  background: rgba(255,255,255,0.9);
+  padding: 2px 6px;
+  border-radius: 4px;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+}
+#fix-inspector {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483647;
+  background: rgba(10,10,10,0.88);
+  color: #f2f2f2;
+  font: 14px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  display: none;
+}
+#fix-inspector .panel {
+  position: absolute;
+  inset: 6% 4% 8% 4%;
+  background: #111;
+  border-radius: 14px;
+  border: 1px solid #2a2a2a;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+#fix-inspector .header {
+  padding: 10px 14px;
+  background: #171717;
+  border-bottom: 1px solid #2a2a2a;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+#fix-inspector .title { font-weight: 600; }
+#fix-inspector .close {
+  font-size: 13px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: #2b2b2b;
+  color: #f2f2f2;
+}
+#fix-inspector .body {
+  flex: 1;
+  overflow: auto;
+  padding: 10px 14px 16px;
+}
+#fix-inspector .section {
+  margin-bottom: 16px;
+}
+#fix-inspector .section h3 {
+  font-size: 12px;
+  color: #a0a0a0;
+  margin: 10px 0 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+#fix-inspector .row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px dashed #262626;
+}
+#fix-inspector .row label { color: #c8c8c8; }
+#fix-inspector .row input {
+  width: 100%;
+  background: #141414;
+  color: #f4f4f4;
+  border: 1px solid #2c2c2c;
+  border-radius: 6px;
+  padding: 4px 6px;
+  font: inherit;
+}
+#fix-inspector .note {
+  color: #8a8a8a;
+  font-size: 12px;
+}
+  `;
+
+  const styleEl = document.createElement('style');
+  styleEl.textContent = css;
+  document.head.appendChild(styleEl);
+
+  const root = document.createElement('div');
+  root.id = 'fix-root';
+  const bubble = document.createElement('div');
+  bubble.id = 'fix-bubble';
+  const halo = document.createElement('div');
+  halo.id = 'fix-halo';
+  const outline = document.createElement('div');
+  outline.id = 'fix-outline';
+  const label = document.createElement('div');
+  label.className = 'label';
+  outline.appendChild(label);
+
+  const inspector = document.createElement('div');
+  inspector.id = 'fix-inspector';
+  inspector.innerHTML = `
+    <div class="panel">
+      <div class="header">
+        <div class="title">Fix Inspector</div>
+        <button class="close" type="button">Close</button>
+      </div>
+      <div class="body"></div>
+    </div>
+  `;
+
+  root.appendChild(outline);
+  root.appendChild(halo);
+  root.appendChild(bubble);
+  document.body.appendChild(root);
+  document.body.appendChild(inspector);
+
+  const closeBtn = inspector.querySelector('.close');
+  const bodyEl = inspector.querySelector('.body');
+
+  closeBtn.addEventListener('click', () => { inspector.style.display = 'none'; });
+
+  function show() {
+    state.visible = true;
+    bubble.style.display = 'block';
+    halo.style.display = 'block';
+    outline.style.display = 'block';
+    updateBubble();
+    updateSelection();
+  }
+
+  function hide() {
+    state.visible = false;
+    bubble.style.display = 'none';
+    halo.style.display = 'none';
+    outline.style.display = 'none';
+    inspector.style.display = 'none';
+  }
+
+  function updateBubble() {
+    bubble.style.left = `${state.x}px`;
+    bubble.style.top = `${state.y}px`;
+    halo.style.left = `${state.x}px`;
+    halo.style.top = `${state.y}px`;
+
+    const angle = Math.atan2(state.vy, state.vx);
+    if (!Number.isNaN(angle)) {
+      const deg = angle * 180 / Math.PI + 90; // base points down
+      bubble.style.transform = `translate(-50%, -50%) rotate(${deg}deg) scale(${1 + state.zIndexOffset * 0.02})`;
+    }
+  }
+
+  function withinHalo(x, y) {
+    const dx = x - state.x;
+    const dy = y - state.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    return dist <= 60; // 120px radius
+  }
+
+  function updateSelection() {
+    if (!state.visible) return;
+    const tipX = state.x;
+    const tipY = state.y + 16; // approximate tip
+    const stack = document.elementsFromPoint(tipX, tipY).filter(el => el !== bubble && el !== halo && el !== outline && el !== root && el !== inspector && !inspector.contains(el));
+    state.elementsStack = stack;
+    const idx = Math.min(Math.max(state.zIndexOffset, 0), stack.length - 1);
+    const el = stack[idx] || null;
+    if (el !== state.selectedEl) {
+      clearDim();
+      state.selectedEl = el;
+      dimAbove(stack, idx);
+    }
+    if (!el) {
+      outline.style.display = 'none';
+      return;
+    }
+    outline.style.display = 'block';
+    const rect = el.getBoundingClientRect();
+    outline.style.left = `${rect.left}px`;
+    outline.style.top = `${rect.top}px`;
+    outline.style.width = `${rect.width}px`;
+    outline.style.height = `${rect.height}px`;
+    label.textContent = describeEl(el);
+  }
+
+  function describeEl(el) {
+    const id = el.id ? `#${el.id}` : '';
+    const cls = el.classList.length ? `.${[...el.classList].join('.')}` : '';
+    return `${el.tagName.toLowerCase()}${id}${cls}`;
+  }
+
+  function dimAbove(stack, idx) {
+    for (let i = 0; i < idx; i++) {
+      const el = stack[i];
+      if (!el || el === document.documentElement || el === document.body) continue;
+      if (el.style && !state.dimmedEls.has(el)) {
+        state.dimmedEls.add(el);
+        el.dataset.fixPrevOpacity = el.style.opacity || '';
+        el.style.opacity = '0.25';
+      }
+    }
+  }
+
+  function clearDim() {
+    state.dimmedEls.forEach((el) => {
+      if (!el || !el.style) return;
+      el.style.opacity = el.dataset.fixPrevOpacity || '';
+      delete el.dataset.fixPrevOpacity;
+    });
+    state.dimmedEls.clear();
+  }
+
+  function moveTo(x, y, fromUser = true) {
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    const prevX = state.x;
+    const prevY = state.y;
+
+    if (x < 0 || x > w) {
+      if (!state.edgeLockX) {
+        x = Math.min(Math.max(x, 0), w);
+        state.edgeLockX = true;
+      } else {
+        x = x < 0 ? w : 0;
+      }
+    } else {
+      state.edgeLockX = false;
+    }
+    if (y < 0 || y > h) {
+      if (!state.edgeLockY) {
+        y = Math.min(Math.max(y, 0), h);
+        state.edgeLockY = true;
+      } else {
+        y = y < 0 ? h : 0;
+      }
+    } else {
+      state.edgeLockY = false;
+    }
+
+    state.x = x;
+    state.y = y;
+    const now = performance.now();
+    const dt = Math.max(now - state.lastMoveTime, 1);
+    state.vx = (state.x - prevX) / dt;
+    state.vy = (state.y - prevY) / dt;
+    state.lastMoveTime = now;
+    updateBubble();
+    updateSelection();
+
+    if (fromUser) Fix.emit('move', { x: state.x, y: state.y });
+  }
+
+  function showInspector() {
+    const el = state.selectedEl;
+    if (!el) return;
+    inspector.style.display = 'block';
+    bodyEl.innerHTML = '';
+
+    const sections = [];
+    sections.push({
+      title: 'Element',
+      rows: [
+        { name: 'tag', value: el.tagName.toLowerCase() },
+        { name: 'id', value: el.id || '' },
+        { name: 'class', value: el.className || '' }
+      ],
+      editable: false
+    });
+
+    const computed = window.getComputedStyle(el);
+    const props = [];
+    for (let i = 0; i < computed.length; i++) {
+      const p = computed[i];
+      props.push([p, computed.getPropertyValue(p)]);
+    }
+    props.sort((a,b) => a[0].localeCompare(b[0]));
+
+    sections.push({
+      title: 'Computed Styles (edit -> inline style)',
+      rows: props.map(([name, value]) => ({ name, value })),
+      editable: true
+    });
+
+    const matched = collectMatchedRules(el);
+    if (matched.length) {
+      sections.push({
+        title: 'Matched Rules',
+        rows: matched.map(m => ({ name: m.selector, value: m.decl })),
+        editable: false
+      });
+    }
+
+    sections.forEach(sec => {
+      const section = document.createElement('div');
+      section.className = 'section';
+      const h3 = document.createElement('h3');
+      h3.textContent = sec.title;
+      section.appendChild(h3);
+      sec.rows.slice(0, 200).forEach(row => {
+        const r = document.createElement('div');
+        r.className = 'row';
+        const label = document.createElement('label');
+        label.textContent = row.name;
+        const input = document.createElement('input');
+        input.value = row.value;
+        input.disabled = !sec.editable;
+        if (sec.editable) {
+          input.addEventListener('change', () => {
+            el.style.setProperty(row.name, input.value);
+            Fix.emit('csschange', { el, name: row.name, value: input.value });
+          });
+        }
+        r.appendChild(label);
+        r.appendChild(input);
+        section.appendChild(r);
+      });
+      bodyEl.appendChild(section);
+    });
+
+    const note = document.createElement('div');
+    note.className = 'note';
+    note.textContent = 'Edits apply as inline styles on the selected element.';
+    bodyEl.appendChild(note);
+  }
+
+  function collectMatchedRules(el) {
+    const out = [];
+    for (const sheet of document.styleSheets) {
+      let rules;
+      try { rules = sheet.cssRules; } catch (e) { continue; }
+      if (!rules) continue;
+      for (const rule of rules) {
+        if (rule.type !== 1 || !rule.selectorText) continue; // STYLE_RULE
+        const selectors = rule.selectorText.split(',').map(s => s.trim());
+        for (const sel of selectors) {
+          try {
+            if (el.matches(sel)) {
+              out.push({ selector: sel, decl: rule.style.cssText });
+              break;
+            }
+          } catch (e) { /* ignore */ }
+        }
+      }
+    }
+    return out;
+  }
+
+  function onGestureTap(type, data) {
+    Fix.emit(type, data);
+    if (type === 'tap') {
+      // no-op
+    } else if (type === 'doubletap') {
+      // no-op
+    } else if (type === 'tripletap') {
+      // no-op
+    }
+  }
+
+  function handleTapSequence(e, targetIsBubble, targetIsHalo) {
+    const now = performance.now();
+    const g = state.gesture;
+    if (now - g.lastTapTime > 350) {
+      g.tapCount = 0;
+    }
+    g.tapCount += 1;
+    g.lastTapTime = now;
+    g.startX = e.clientX;
+    g.startY = e.clientY;
+    g.axisLock = null;
+    g.sliding = false;
+    g.startedOnBubble = targetIsBubble;
+    g.startedOnHalo = targetIsHalo;
+
+    clearTimeout(g.tapTimer);
+    g.tapTimer = setTimeout(() => {
+      if (g.tapCount === 1) onGestureTap('tap', { x: e.clientX, y: e.clientY });
+      if (g.tapCount === 2) onGestureTap('doubletap', { x: e.clientX, y: e.clientY });
+      if (g.tapCount >= 3) onGestureTap('tripletap', { x: e.clientX, y: e.clientY });
+      g.tapCount = 0;
+    }, 320);
+  }
+
+  function handleSlide(e) {
+    const g = state.gesture;
+    if (g.tapCount < 2) return;
+    const dx = e.clientX - g.startX;
+    const dy = e.clientY - g.startY;
+    if (!g.axisLock) {
+      if (Math.abs(dx) + Math.abs(dy) < 6) return;
+      g.axisLock = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
+      g.sliding = true;
+      Fix.emit(`${g.tapCount === 2 ? 'doubletap' : 'tripletap'}+slide${g.axisLock.toUpperCase()}`, { dx, dy });
+    } else {
+      Fix.emit(`${g.tapCount === 2 ? 'doubletap' : 'tripletap'}+slide${g.axisLock.toUpperCase()}`, { dx, dy });
+    }
+
+    if (g.startedOnHalo && g.tapCount === 2 && g.axisLock === 'y') {
+      // z-index traverse
+      const dir = dy < 0 ? 1 : -1;
+      state.zIndexOffset = Math.min(Math.max(state.zIndexOffset + dir, 0), Math.max(state.elementsStack.length - 1, 0));
+      updateSelection();
+      bubble.style.transform = bubble.style.transform.replace(/scale\([^\)]+\)/, `scale(${1 + state.zIndexOffset * 0.02})`);
+    }
+  }
+
+  function isTargetBubble(e) {
+    return e.target === bubble || bubble.contains(e.target);
+  }
+
+  function isTargetHalo(e) {
+    return e.target === halo || halo.contains(e.target);
+  }
+
+  // Global triple tap + hold to show
+  document.addEventListener('touchstart', (e) => {
+    if (e.touches.length !== 1) return;
+    const t = e.touches[0];
+    handleTapSequence(t, isTargetBubble(e), isTargetHalo(e));
+    const g = state.gesture;
+    if (g.tapCount >= 3) {
+      clearTimeout(g.holdTimer);
+      g.holdTimer = setTimeout(() => {
+        if (!state.visible) show();
+      }, 1000);
+    }
+  }, { passive: true });
+
+  document.addEventListener('touchend', () => {
+    clearTimeout(state.gesture.holdTimer);
+  }, { passive: true });
+
+  // Bubble drag + interactions
+  bubble.addEventListener('touchstart', (e) => {
+    if (!state.visible) return;
+    if (e.touches.length !== 1) return;
+    const t = e.touches[0];
+    state.dragging = true;
+    state.pointerId = t.identifier;
+    halo.classList.add('active');
+    state.gesture.startX = t.clientX;
+    state.gesture.startY = t.clientY;
+    handleTapSequence(t, true, true);
+    Fix.emit('touchstart', { x: t.clientX, y: t.clientY });
+  }, { passive: true });
+
+  halo.addEventListener('touchstart', (e) => {
+    if (!state.visible) return;
+    if (e.touches.length !== 1) return;
+    const t = e.touches[0];
+    if (!withinHalo(t.clientX, t.clientY)) return;
+    state.dragging = true;
+    state.pointerId = t.identifier;
+    halo.classList.add('active');
+    handleTapSequence(t, false, true);
+    Fix.emit('touchstart', { x: t.clientX, y: t.clientY });
+  }, { passive: true });
+
+  document.addEventListener('touchmove', (e) => {
+    if (!state.dragging) return;
+    const t = [...e.touches].find(tt => tt.identifier === state.pointerId) || e.touches[0];
+    if (!t) return;
+    moveTo(t.clientX, t.clientY);
+    handleSlide(t);
+  }, { passive: true });
+
+  document.addEventListener('touchend', (e) => {
+    if (!state.dragging) return;
+    state.dragging = false;
+    state.pointerId = null;
+    halo.classList.remove('active');
+    Fix.emit('touchend', {});
+  }, { passive: true });
+
+  // Tap on bubble to open inspector
+  bubble.addEventListener('click', (e) => {
+    if (!state.visible) return;
+    showInspector();
+    Fix.emit('tap', { x: state.x, y: state.y });
+    e.stopPropagation();
+  });
+
+  // Keep selection updated on resize
+  window.addEventListener('resize', () => {
+    moveTo(Math.min(state.x, window.innerWidth), Math.min(state.y, window.innerHeight), false);
+  });
+
+  // Default listener for tap+slide events on bubble area
+  Fix.on('doubletap+slideY', () => {});
+  Fix.on('tripletap+slideY', () => {});
+
+  // Initially hidden
+  hide();
+})();
