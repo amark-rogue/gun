@@ -54,32 +54,40 @@
   inset: 0;
   pointer-events: none;
   z-index: 2147483647;
+  --fix-size: 1in;
+  --fix-halo: calc(var(--fix-size) * 2.6);
+  --fix-blur: 2px;
 }
 #fix-bubble {
   position: fixed;
-  width: 38px;
-  height: 48px;
+  width: var(--fix-size);
+  height: var(--fix-size);
   left: 0;
   top: 0;
   transform: translate(-50%, -50%) rotate(0deg);
   pointer-events: auto;
   z-index: 2147483647;
-  filter: blur(0.4px) contrast(1.1);
-  mix-blend-mode: difference;
+  filter: blur(var(--fix-blur)) contrast(1.1);
+
 }
 #fix-bubble::before {
   content: '';
   position: absolute;
-  inset: 0;
-  background: rgba(255,255,255,0.9);
-  border-radius: 18px 18px 18px 18px;
-  clip-path: path('M 19 0 C 28 0 38 10 38 21 C 38 31 31 40 19 48 C 7 40 0 31 0 21 C 0 10 10 0 19 0 Z');
+  width: calc(var(--fix-size) * 0.9);
+  height: calc(var(--fix-size) * 0.9);
+  left: calc(var(--fix-size) * 0.05);
+  top: calc(var(--fix-size) * 0.1);
+  background: rgba(255,255,255,0.02);
+  border-radius: calc(var(--fix-size) * 0.45) calc(var(--fix-size) * 0.45) calc(var(--fix-size) * 0.45) 0;
+  transform: rotate(45deg);
   box-shadow: 0 0 0 1px rgba(255,255,255,0.3);
+  backdrop-filter: invert(1);
+  -webkit-backdrop-filter: invert(1);
 }
 #fix-halo {
   position: fixed;
-  width: 120px;
-  height: 120px;
+  width: var(--fix-halo);
+  height: var(--fix-halo);
   left: 0;
   top: 0;
   transform: translate(-50%, -50%);
@@ -260,17 +268,29 @@
     }
   }
 
+  function getBubbleRect() {
+    return bubble.getBoundingClientRect();
+  }
+
+  function getHaloRect() {
+    return halo.getBoundingClientRect();
+  }
+
   function withinHalo(x, y) {
-    const dx = x - state.x;
-    const dy = y - state.y;
+    const r = getHaloRect();
+    const cx = r.left + r.width / 2;
+    const cy = r.top + r.height / 2;
+    const dx = x - cx;
+    const dy = y - cy;
     const dist = Math.sqrt(dx * dx + dy * dy);
-    return dist <= 60; // 120px radius
+    return dist <= r.width / 2;
   }
 
   function updateSelection() {
     if (!state.visible) return;
-    const tipX = state.x;
-    const tipY = state.y + 16; // approximate tip
+    const br = getBubbleRect();
+    const tipX = br.left + br.width / 2;
+    const tipY = br.top + br.height * 0.85;
     const stack = document.elementsFromPoint(tipX, tipY).filter(el => el !== bubble && el !== halo && el !== outline && el !== root && el !== inspector && !inspector.contains(el));
     state.elementsStack = stack;
     const idx = Math.min(Math.max(state.zIndexOffset, 0), stack.length - 1);
@@ -377,18 +397,18 @@
       editable: false
     });
 
-    const computed = window.getComputedStyle(el);
-    const props = [];
-    for (let i = 0; i < computed.length; i++) {
-      const p = computed[i];
-      props.push([p, computed.getPropertyValue(p)]);
+    const inlineProps = [];
+    for (let i = 0; i < el.style.length; i++) {
+      const p = el.style[i];
+      inlineProps.push([p, el.style.getPropertyValue(p)]);
     }
-    props.sort((a,b) => a[0].localeCompare(b[0]));
+    inlineProps.sort((a,b) => a[0].localeCompare(b[0]));
 
     sections.push({
-      title: 'Computed Styles (edit -> inline style)',
-      rows: props.map(([name, value]) => ({ name, value })),
-      editable: true
+      title: 'Inline Styles',
+      rows: inlineProps.map(([name, value]) => ({ name, value })),
+      editable: true,
+      allowAdd: true
     });
 
     const matched = collectMatchedRules(el);
@@ -424,6 +444,30 @@
         r.appendChild(input);
         section.appendChild(r);
       });
+      if (sec.allowAdd) {
+        const r = document.createElement('div');
+        r.className = 'row';
+        const label = document.createElement('label');
+        label.textContent = '+ add property';
+        const input = document.createElement('input');
+        input.placeholder = 'property: value';
+        input.addEventListener('change', () => {
+          const raw = input.value.trim();
+          if (!raw) return;
+          const idx = raw.indexOf(':');
+          if (idx === -1) return;
+          const name = raw.slice(0, idx).trim();
+          const value = raw.slice(idx + 1).trim();
+          if (!name) return;
+          el.style.setProperty(name, value);
+          Fix.emit('csschange', { el, name, value });
+          input.value = '';
+          showInspector();
+        });
+        r.appendChild(label);
+        r.appendChild(input);
+        section.appendChild(r);
+      }
       bodyEl.appendChild(section);
     });
 
