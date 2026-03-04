@@ -7,7 +7,7 @@ var W = window, D = document, SW = screen.width, SH = screen.height, ON = 'addEv
 }());
 var tmp = D[HI]('meta'); tmp.name = 'viewport'; tmp.content = 'width=device-width, initial-scale=1, interactive-widget=resizes-content'; D.head.appendChild(tmp);
 //(tmp=D[HI]('link')).rel="stylesheet"; tmp.href=((D.currentScript||'').src||'').replace('.js','.css'); D.head.appendChild(tmp); // auto-add CSS?
-W.parent === W && ((tmp = D.head.parentNode.style)['overscroll-behavior-y'] = 'contain') && (tmp['background-color'] = 'var(--fill)');
+tmp = D.head.parentNode.style; if(W.parent === W) { tmp['overscroll-behavior-y'] = 'contain'; tmp['background-color'] = 'var(--fill)'; } else { tmp['overflow'] = 'hidden' } 
 function LOAD(src, h, s){ (s = D[HI]('script')).onload = h; s.src = src; D.head.appendChild(s) };
 function MAP(scroll, screen){ return (scroll / screen)>>0 }; // scroll, screen
 kit = function(){};
@@ -39,20 +39,54 @@ W[ON]('message',function(eve,data,i,tmp){
   kit.say(data.data||data.detail,data.type,i);
 });
 kit.views = new Map;
-(kit.watch = new MutationObserver(function(eve,b,low){eve.forEach(function(changes){changes.addedNodes.forEach(function(node){ //console.log("observed change on", node);
+(kit.size = function(b,d,h,w,last){
+  b = D.body; d = D.documentElement;
+  h = Math.max(
+    ((b||'').scrollHeight)||0, ((d||'').scrollHeight)||0,
+    ((b||'').offsetHeight)||0, ((d||'').offsetHeight)||0,
+    ((b||'').clientHeight)||0, ((d||'').clientHeight)||0
+  );
+  w = Math.max(
+    ((b||'').scrollWidth)||0, ((d||'').scrollWidth)||0,
+    ((b||'').offsetWidth)||0, ((d||'').offsetWidth)||0,
+    ((b||'').clientWidth)||0, ((d||'').clientWidth)||0
+  );
+  if((b||'').children && b.children.length){
+    last = b.children[b.children.length - 1];
+    h = Math.max(h, kit.watch.low(last), kit.watch.low(b));
+    w = Math.max(w, kit.watch.wide(last), kit.watch.wide(b));
+  }
+  return {height: Math.ceil(h), width: Math.ceil(w)};
+});
+kit.watch = {};
+kit.watch.resize = function(){
+  if(kit.watch.wait){ return }
+  kit.watch.wait = W.requestAnimationFrame(function(){
+    kit.watch.wait = 0;
+    kit.up(kit.size(),'style');
+  });
+};
+(kit.watch.observer = new MutationObserver(function(eve,b,low){eve.forEach(function(changes){changes.addedNodes.forEach(function(node){ //console.log("observed change on", node);
   node.dispatchEvent(new CustomEvent('join '+node.nodeName.toLowerCase(), {bubbles:true}));
   node.dispatchEvent(new CustomEvent('join', {bubbles:true}));
   //low = kit.watch.low(node, low); 
 })});
   //console.log(location.pathname.split('/').slice(-1)[0], "LOWEST", low, kit.watch.low(D.body), D.body.scrollHeight);
-  kit.up({height:D.body.scrollHeight,width:D.body.scrollWidth},'style');
+  kit.watch.resize();
 })).observe(D.documentElement||D,{childList:true,subtree:true,characterData:true});
 
 kit.watch.low = function(v,l,f){ f='getBoundingClientRect'; return Math.max(((v[f]?v[f]():'').bottom||0) + (W.pageYOffset || D.documentElement.scrollTop),l||0) }
+kit.watch.wide = function(v,l,f){ f='getBoundingClientRect'; return Math.max(((v[f]?v[f]():'').right||0) + (W.pageXOffset || D.documentElement.scrollLeft),l||0) }
 kit.ear('join iframe',kit.add=function(eve){
   //console.log(location.pathname.split('/').slice(-1)[0], "JOIN");
   kit.views.set(eve.target.contentWindow, eve.target);
 });
+W[ON]('load', kit.watch.resize);
+W[ON]('resize', kit.watch.resize);
+W[ON]('pageshow', kit.watch.resize);
+W[ON]('transitionend', kit.watch.resize, true);
+W[ON]('animationend', kit.watch.resize, true);
+if((D.fonts||'').ready){ D.fonts.ready.then(kit.watch.resize) }
 kit.ear('style',function(eve,i){
   if(!eve.target || !eve.target.style){ return }
   //console.log(location.pathname.split('/').slice(-1)[0], "resize:", eve.target, eve.detail);

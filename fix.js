@@ -46,7 +46,9 @@
       startedOnHalo: false,
       sliding: false,
       grabOffsetX: 0,
-      grabOffsetY: 0
+      grabOffsetY: 0,
+      lastX: 0,
+      lastY: 0
     }
   };
 
@@ -56,8 +58,8 @@
   inset: 0;
   pointer-events: none;
   z-index: 2147483647;
-  --fix-size: 1in;
-  --fix-halo: calc(var(--fix-size) * 2.6);
+  --fix-size: 0.5in;
+  --fix-halo: calc(var(--fix-size) * 5);
   --fix-blur: 2px;
 }
 #fix-bubble {
@@ -70,25 +72,26 @@
   z-index: 2147483647;
   filter: blur(var(--fix-blur)) contrast(1.1);
   background: rgba(255,255,255,0.02);
-  border-radius: calc(var(--fix-size) * 0.45) calc(var(--fix-size) * 0.45) calc(var(--fix-size) * 0.45) 0;
+  border-radius: 0 calc(var(--fix-size) * 0.45) calc(var(--fix-size) * 0.45) calc(var(--fix-size) * 0.45);
   box-shadow: 0 0 0 1px rgba(255,255,255,0.3);
   backdrop-filter: invert(1);
   -webkit-backdrop-filter: invert(1);
 }
-#fix-halo {
-  position: fixed;
+#fix-bubble::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
   width: var(--fix-halo);
   height: var(--fix-halo);
-  left: 0;
-  top: 0;
   transform: translate(-50%, -50%);
   border-radius: 50%;
-  background: radial-gradient(rgba(255,255,255,0.18), rgba(255,255,255,0.02) 55%, transparent 70%);
-  opacity: 0;
+  background: black;
+  opacity: 0.01;
   transition: opacity 250ms ease;
-  pointer-events: auto;
+  pointer-events: none;
 }
-#fix-halo.active { opacity: 0.9; }
+#fix-bubble.active::after { opacity: 0.1; }
 #fix-outline {
   position: fixed;
   pointer-events: none;
@@ -198,8 +201,6 @@
   root.id = 'fix-root';
   const bubble = document.createElement('div');
   bubble.id = 'fix-bubble';
-  const halo = document.createElement('div');
-  halo.id = 'fix-halo';
   const outline = document.createElement('div');
   outline.id = 'fix-outline';
   const label = document.createElement('div');
@@ -219,7 +220,6 @@
   `;
 
   root.appendChild(outline);
-  root.appendChild(halo);
   root.appendChild(bubble);
   document.body.appendChild(root);
   document.body.appendChild(inspector);
@@ -232,7 +232,6 @@
   function show() {
     state.visible = true;
     bubble.style.display = 'block';
-    halo.style.display = 'block';
     outline.style.display = 'block';
     updateBubble();
     updateSelection();
@@ -241,7 +240,6 @@
   function hide() {
     state.visible = false;
     bubble.style.display = 'none';
-    halo.style.display = 'none';
     outline.style.display = 'none';
     inspector.style.display = 'none';
   }
@@ -249,28 +247,28 @@
   function updateBubble() {
     bubble.style.left = `${state.x}px`;
     bubble.style.top = `${state.y}px`;
-    halo.style.left = `${state.x}px`;
-    halo.style.top = `${state.y}px`;
 
-    bubble.style.transform = `translate(-50%, -50%) rotate(45deg) scale(${1 + state.zIndexOffset * 0.02})`;
+    bubble.style.transform = `translate(-50%, -50%) rotate(0deg) scale(${1 + state.zIndexOffset * 0.02})`;
   }
 
   function getBubbleRect() {
     return bubble.getBoundingClientRect();
   }
 
-  function getHaloRect() {
-    return halo.getBoundingClientRect();
+  function getHaloRadius() {
+    const v = getComputedStyle(root).getPropertyValue('--fix-halo').trim();
+    const n = parseFloat(v);
+    if (Number.isFinite(n)) return n / 2;
+    return 60;
   }
 
   function withinHalo(x, y) {
-    const r = getHaloRect();
-    const cx = r.left + r.width / 2;
-    const cy = r.top + r.height / 2;
+    const cx = state.x;
+    const cy = state.y;
     const dx = x - cx;
     const dy = y - cy;
     const dist = Math.sqrt(dx * dx + dy * dy);
-    return dist <= r.width / 2;
+    return dist <= getHaloRadius();
   }
 
   function updateSelection() {
@@ -278,7 +276,7 @@
     const br = getBubbleRect();
     const tipX = br.left + br.width / 2;
     const tipY = br.top + br.height * 0.85;
-    const stack = document.elementsFromPoint(tipX, tipY).filter(el => el !== bubble && el !== halo && el !== outline && el !== root && el !== inspector && !inspector.contains(el));
+    const stack = document.elementsFromPoint(tipX, tipY).filter(el => el !== bubble && el !== outline && el !== root && el !== inspector && !inspector.contains(el));
     state.elementsStack = stack;
     const idx = Math.min(Math.max(state.zIndexOffset, 0), stack.length - 1);
     const el = stack[idx] || null;
@@ -548,15 +546,33 @@
     return e.target === bubble || bubble.contains(e.target);
   }
 
-  function isTargetHalo(e) {
-    return e.target === halo || halo.contains(e.target);
+  function startDrag(t, startedOnBubble, startedOnHalo, e) {
+    state.dragging = true;
+    state.pointerId = t.identifier;
+    bubble.classList.add('active');
+    state.gesture.startX = t.clientX;
+    state.gesture.startY = t.clientY;
+    state.gesture.lastX = t.clientX;
+    state.gesture.lastY = t.clientY;
+    state.gesture.grabOffsetX = t.clientX - state.x;
+    state.gesture.grabOffsetY = t.clientY - state.y;
+    state.gesture.startedOnBubble = startedOnBubble;
+    state.gesture.startedOnHalo = startedOnHalo;
+    handleTapSequence(t, startedOnBubble, startedOnHalo);
+    Fix.emit('touchstart', { x: t.clientX, y: t.clientY });
+    if (e) e.preventDefault();
   }
 
   // Global triple tap + hold to show
   document.addEventListener('touchstart', (e) => {
     if (e.touches.length !== 1) return;
+    if (state.dragging) return;
     const t = e.touches[0];
-    handleTapSequence(t, isTargetBubble(e), isTargetHalo(e));
+    if (state.visible && !state.dragging && withinHalo(t.clientX, t.clientY)) {
+      startDrag(t, isTargetBubble(e), true, e);
+      return;
+    }
+    handleTapSequence(t, isTargetBubble(e), state.visible && withinHalo(t.clientX, t.clientY));
     const g = state.gesture;
     if (g.tapCount >= 3) {
       clearTimeout(g.holdTimer);
@@ -575,37 +591,15 @@
     if (!state.visible) return;
     if (e.touches.length !== 1) return;
     const t = e.touches[0];
-    state.dragging = true;
-    state.pointerId = t.identifier;
-    halo.classList.add('active');
-    state.gesture.startX = t.clientX;
-    state.gesture.startY = t.clientY;
-    state.gesture.grabOffsetX = t.clientX - state.x;
-    state.gesture.grabOffsetY = t.clientY - state.y;
-    handleTapSequence(t, true, true);
-    Fix.emit('touchstart', { x: t.clientX, y: t.clientY });
-    e.preventDefault();
-  }, { passive: false });
-
-  halo.addEventListener('touchstart', (e) => {
-    if (!state.visible) return;
-    if (e.touches.length !== 1) return;
-    const t = e.touches[0];
-    if (!withinHalo(t.clientX, t.clientY)) return;
-    state.dragging = true;
-    state.pointerId = t.identifier;
-    halo.classList.add('active');
-    state.gesture.grabOffsetX = t.clientX - state.x;
-    state.gesture.grabOffsetY = t.clientY - state.y;
-    handleTapSequence(t, false, true);
-    Fix.emit('touchstart', { x: t.clientX, y: t.clientY });
-    e.preventDefault();
+    startDrag(t, true, true, e);
   }, { passive: false });
 
   document.addEventListener('touchmove', (e) => {
     if (!state.dragging) return;
     const t = [...e.touches].find(tt => tt.identifier === state.pointerId) || e.touches[0];
     if (!t) return;
+    state.gesture.lastX = t.clientX;
+    state.gesture.lastY = t.clientY;
     moveTo(t.clientX - state.gesture.grabOffsetX, t.clientY - state.gesture.grabOffsetY);
     handleSlide(t);
     e.preventDefault();
@@ -615,17 +609,16 @@
     if (!state.dragging) return;
     state.dragging = false;
     state.pointerId = null;
-    halo.classList.remove('active');
+    bubble.classList.remove('active');
+    const g = state.gesture;
+    const dx = g.lastX - g.startX;
+    const dy = g.lastY - g.startY;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (g.startedOnBubble && dist < 6 && !g.sliding) {
+      showInspector();
+    }
     Fix.emit('touchend', {});
   }, { passive: true });
-
-  // Tap on bubble to open inspector
-  bubble.addEventListener('click', (e) => {
-    if (!state.visible) return;
-    showInspector();
-    Fix.emit('tap', { x: state.x, y: state.y });
-    e.stopPropagation();
-  });
 
   // Keep selection updated on resize
   window.addEventListener('resize', () => {
